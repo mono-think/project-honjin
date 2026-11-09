@@ -7,12 +7,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 # ==========================================
 # 暗号化設定 (※本番稼働時は .env などの環境変数に移行します)
 # ==========================================
-# AES-GCM用の32バイト(256bit)マスターキー。開発用に固定値を使用します。
-ENCRYPTION_KEY_BASE64 = "16cIuI1VfXzT-V-MhJ4d5_xO_R1z5Ew1x4z0p2EaL5c=" 
-ENCRYPTION_KEY = base64.urlsafe_b64decode(ENCRYPTION_KEY_BASE64)
-
-# ブラインドインデックス(HMAC)用のシークレットキー
-BLIND_INDEX_KEY = b"honjin-blind-index-super-secret-key"
+ENCRYPTION_KEY = base64.urlsafe_b64decode(os.getenv("ENCRYPTION_KEY_BASE64"))
 
 def encrypt_pii(plaintext: str | None) -> str | None:
     """PII（個人情報）をAES-GCMで暗号化する"""
@@ -57,5 +52,5 @@ def generate_blind_index(plaintext: str | None) -> str | None:
     # 検索時の揺らぎを吸収するため、前後の空白を削除し小文字に統一（正規化）
     normalized_text = plaintext.strip().lower()
     
-    h = hmac.new(BLIND_INDEX_KEY, normalized_text.encode('utf-8'), hashlib.sha256)
+    h = hmac.new(os.getenv("BLIND_INDEX_KEY"), normalized_text.encode('utf-8'), hashlib.sha256)
     return h.hexdigest()
