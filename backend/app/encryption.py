@@ -52,5 +52,5 @@ def generate_blind_index(plaintext: str | None) -> str | None:
     # 検索時の揺らぎを吸収するため、前後の空白を削除し小文字に統一（正規化）
     normalized_text = plaintext.strip().lower()
     
-    h = hmac.new(os.getenv("BLIND_INDEX_KEY"), normalized_text.encode('utf-8'), hashlib.sha256)
+    h = hmac.new(os.getenv("BLIND_INDEX_KEY", "").encode('utf-8'), normalized_text.encode('utf-8'), hashlib.sha256)
     return h.hexdigest()

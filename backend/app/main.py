@@ -1,12 +1,13 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status, Request, Header
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPBearer, HTTPAuthorizationCredentials
 from sqlmodel import Session, select, SQLModel
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 from pydantic import BaseModel
-from app.database import engine
+from app.database import engine, get_session
 from app.models import Company, Department, Personal, Account, SessionRecord, AuditLog, OvertimeRequest, RegisteredDevice
 from app.security import verify_password, get_password_hash, create_access_token, SECRET_KEY, ALGORITHM
-from app.encryption import encrypt_pii, decrypt_pii, generate_blind_index  # ← 暗号化モジュールを追加
+from app.encryption import encrypt_pii, decrypt_pii, generate_blind_index
 from datetime import datetime, timezone, time, date
 from zoneinfo import ZoneInfo
 from app.logger import logger
@@ -15,26 +16,26 @@ import jwt
 from jwt.exceptions import InvalidTokenError
 import secrets
 import string
+import uuid
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """アプリケーションの起動・終了時の処理"""
+    SQLModel.metadata.create_all(engine)
+    yield
 
 app = FastAPI(
     title="Project Honjin API",
     description="洋上プラント構想に基づくコアAPI",
     version="1.0.0",
     docs_url="/api/docs",
-    openapi_url="/api/openapi.json"
+    openapi_url="/api/openapi.json",
+    lifespan=lifespan
 )
-
-@app.on_event("startup")
-def on_startup():
-    SQLModel.metadata.create_all(engine)
 
 @app.get("/api/health")
 def health_check():
     return {"status": "ok", "message": "Honjin Backend is running."}
-
-def get_session():
-    with Session(engine) as session:
-        yield session
 
 oauth2_scheme = HTTPBearer()
 
@@ -117,7 +118,10 @@ def verify_working_hours(
 
     # 1. 緊急バイパス権限の確認
     if account.emergency_bypass_enabled:
-        logger.info(f"緊急バイパス発動: {user.id}")
+        logger.info(
+            "緊急バイパス発動",
+            extra={"extra_data": {"user_id": user.id}}
+        )
         return current_user_id
 
     # 2. 所属組織（Company or Department）の業務時間とタイムゾーンを取得
@@ -151,7 +155,10 @@ def verify_working_hours(
     approved_request = session.exec(statement).first()
 
     if approved_request:
-        logger.info(f"時間外アクセス許可 (申請ID: {approved_request.id}): {user.id}")
+        logger.info(
+            "時間外アクセス許可",
+            extra={"extra_data": {"request_id": approved_request.id, "user_id": user.id}}
+        )
         return current_user_id
 
     # 6. 全てNGなら、監査ログ(DB)とログファイルに記録してアクセス遮断(403)
@@ -197,7 +204,8 @@ def read_users_me(
     }
 
 @app.post("/api/logout")
-def logout(token: Annotated[str, Depends(oauth2_scheme)]):
+def logout(auth: Annotated[HTTPAuthorizationCredentials, Depends(oauth2_scheme)]):
+    token = auth.credentials
     try:
         # トークンの有効期限(exp)を取得
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -342,8 +350,8 @@ def login(
         # 今回はテスト用にログに出力して確認します
         user = session.exec(select(Personal).where(Personal.id == account.personal_id)).first()
         logger.info(
-            f"【デバイス認証】未知の端末からのログイン。確認コード: {verification_code}",
-            extra={"extra_data": {"user_id": account.personal_id, "ip": request.client.host}}
+            "【デバイス認証】未知の端末からのログイン",
+            extra={"extra_data": {"user_id": account.personal_id, "ip": request.client.host, "verification_code": verification_code}}
         )
 
         # フロントエンドには、ユーザーを識別するための一時的なトークン(temp_token)だけを渡す
@@ -390,7 +398,6 @@ def verify_device(
     redis_client.delete(redis_key)
 
     # 新しいデバイストークンを生成（UUIDなど推測不可能な文字列）
-    import uuid
     new_device_token = str(uuid.uuid4())
     user_agent = request.headers.get("user-agent", "Unknown Device")
 
@@ -459,7 +466,7 @@ def get_overtime_requests(
 
 
 class OvertimeStatusUpdateRequest(BaseModel):
-    status: str  # "approved" または "rejected"
+    status: Literal["approved", "rejected"]
 
 @app.put("/api/overtime-requests/{request_id}/status", tags=["Overtime"])
 def update_overtime_status(
@@ -476,16 +483,13 @@ def update_overtime_status(
     
     if not overtime_req:
         raise HTTPException(status_code=404, detail="申請が見つかりません")
-    
-    if req.status not in ["approved", "rejected"]:
-        raise HTTPException(status_code=400, detail="無効なステータスです")
 
     overtime_req.status = req.status
     session.add(overtime_req)
     session.commit()
     
     logger.info(
-        f"時間外申請が {req.status} されました",
-        extra={"extra_data": {"request_id": request_id, "approved_by": current_user_id}}
+        "時間外申請のステータスが更新されました",
+        extra={"extra_data": {"request_id": request_id, "new_status": req.status, "approved_by": current_user_id}}
     )
     return {"message": f"申請を {req.status} に更新しました"}
